@@ -75,13 +75,6 @@ The project is fully containerized and designed for a **Kubernetes** environment
 *   **Environment Configuration:** Moving sensitive data (like passwords and secrets) out of the code and into **K8s Secrets** and **Environment Variables**.
 *   **Service Discovery:** Configuring the API Gateway to correctly route traffic to internal services within the Kubernetes cluster.
 
-### Load Test Results (k6)
-The reliability of the inventory locking mechanism was verified with k6:
-- **Concurrency:** 50 Virtual Users
-- **Throughput:** ~5,000 requests/sec
-- **p95 Latency:** 52ms (under lock contention)
-- **Data Integrity:** Exactly 1,000/1,000 units sold, 0 overselling verified via DB query.
-
 ### Note for Apple Silicon (M1/M2/M3) Users
 This project is optimized for ARM64 architecture and Docker Desktop v29+.
 To ensure a seamless development experience:
