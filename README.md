@@ -7,12 +7,12 @@ This is a microservices-based project built with **Java 17** and **Spring Boot 3
 ```mermaid
 graph TD
     Client[Client / Postman] -->|HTTP Request| Gateway[API Gateway :8080]
-    
+
     subgraph "Microservices Layer"
         Gateway --> Auth[Auth Service :8081]
         Gateway --> Product[Product Service :8082]
         Gateway --> Inventory[Inventory Service :8083]
-        Gateway --> Notification[Notification Service :8084]
+        Notification[Notification Service :8084]
     end
 
     subgraph "Persistence & Infrastructure"
@@ -29,51 +29,59 @@ graph TD
     end
 
     subgraph "Observability Stack"
-        ELK[ELK Stack] --- Zipkin[Zipkin Tracing]
+        Zipkin[Zipkin Tracing]
+        ELK[ELK Stack]
         Auth -.-> ELK
         Product -.-> ELK
         Inventory -.-> ELK
     end
 ```
 
-The project is structured using **Maven Multi-Module**, consisting of the following services:
+*Ports shown are the host ports from `docker-compose.yml`. The Notification Service is not exposed through the gateway; it only consumes Kafka events.*
 
-*   **Gateway Service:** The entry point for all requests, handling routing and basic fault tolerance with **Resilience4j**.
+The project is structured using **Maven Multi-Module** (9 modules: 5 services and 4 shared modules):
+
+*   **Gateway Service:** The entry point for HTTP requests. Routes `/api/v1/auth`, `/api/v1/products`, `/api/v1/categories` and `/api/v1/inventory` to the matching services and applies a **Resilience4j** circuit breaker for fault tolerance.
 *   **Auth Service:** Manages user authentication and authorization using **JWT** and **Spring Security 6**.
-*   **Product Service:** Handles product listings and uses **Redis** for simple caching.
-*   **Inventory Service:** Manages stock levels and ensures data integrity during concurrent updates.
-*   **Notification Service:** A separate service that listens to **Kafka** topics to process notifications.
-*   **Marketplace Common:** A shared library used by all services for common DTOs, events, and utilities.
-*   **Marketplace Common Test:** Centralized test kit providing a shared infrastructure for integration tests.
+*   **Product Service:** Handles product listings, uses **Redis** to cache categories, and publishes a `ProductCreatedEvent` to Kafka when a product is saved.
+*   **Inventory Service:** Manages stock levels, creates the stock record when a product-created event arrives, and uses pessimistic locking when stock is deducted.
+*   **Notification Service:** Consumes the same product-created events from **Kafka**. At the moment it only logs them; real notification delivery (email, SMS) is a planned next step.
+*   **Marketplace Common (core, web, persistence):** Shared modules for common DTOs, events and utilities.
+*   **Marketplace Common Test:** A shared test kit that provides the infrastructure for integration tests (Testcontainers).
 
 ## Key Features & Learning Points
 
 ### 1. Handling Concurrency
-In the **Inventory Service**, I implemented **Pessimistic Locking** to prevent issues where multiple orders might try to deduct the same stock item simultaneously. This ensures data integrity under high-load scenarios.
+In the **Inventory Service**, I implemented **Pessimistic Locking** (a database row lock inside a transaction) to prevent overselling when multiple orders try to deduct the same stock item at the same time. The second request waits until the first transaction finishes, then reads the updated stock and is rejected if there is not enough left.
 
 ### 2. Message-Driven Communication
-I integrated **Apache Kafka** to allow services to communicate asynchronously. Key learnings include:
-*   **Transactional Events:** Ensuring a message is sent to the broker only after a successful database commit.
-*   **Error Handling:** Basic retry mechanisms for consumer resilience.
+I integrated **Apache Kafka** to let services communicate asynchronously:
+*   The Product Service publishes a `ProductCreatedEvent` to the `product-created-topic` topic after a product is saved.
+*   The Inventory Service and the Notification Service each consume the topic with their own consumer group (`inventory-group`, `notification-group`), so both receive every event.
 
 ### 3. Monitoring & Observability
 To gain visibility into the distributed system, I integrated:
-*   **Zipkin:** To trace request flows from the Gateway through various backend services.
-*   **ELK Stack:** Collecting and centralizing logs from all 13 containers for easier debugging and monitoring.
+*   **Zipkin:** To trace request flows between services.
+*   **ELK Stack:** Collecting and centralizing logs for easier debugging and monitoring.
 
 ## Infrastructure & DevOps
 
-The project is fully containerized and designed for a **Kubernetes** environment.
-
-*   **Docker & Compose:** Used to manage the development environment with 13 containers (Services, DBs, Kafka, etc.).
-*   **Kubernetes & Helm:** Packaged as a **Helm Chart** to simplify deployment and configuration management on a K8s cluster.
-*   **CI/CD:** Automated the build process and Docker image creation using **GitHub Actions**.
+*   **Docker & Compose:** Used to manage the development environment with 13 containers (5 services, PostgreSQL, Redis, Kafka, Zookeeper, Zipkin, Elasticsearch, Logstash and Kibana).
+*   **Kubernetes & Helm:** A **Helm Chart** and Kubernetes manifests are included for deploying the stack to a local Kubernetes cluster. The chart reads passwords and secrets from Kubernetes Secrets.
+*   **CI/CD:** A **GitHub Actions** pipeline builds the services and pushes the Docker images to Docker Hub.
 
 ## Technical Challenges Solved
 
-*   **Dependency Management:** Structuring the project into 6 modules while maintaining a clean dependency graph without circular references.
-*   **Environment Configuration:** Moving sensitive data (like passwords and secrets) out of the code and into **K8s Secrets** and **Environment Variables**.
-*   **Service Discovery:** Configuring the API Gateway to correctly route traffic to internal services within the Kubernetes cluster.
+*   **Dependency Management:** Structuring the project into 9 modules while keeping a clean dependency graph without circular references.
+*   **Environment Configuration:** Moving sensitive data (like passwords and secrets) out of the code and into **Kubernetes Secrets** and **environment variables**.
+*   **Service Routing:** Configuring the API Gateway to route traffic by service name (URLs are set through environment variables), both in Docker Compose and in Kubernetes.
+
+## Known Limitations & Next Steps
+
+*   The Notification Service only logs events; sending real notifications is not implemented yet.
+*   The Kafka event is published right after the product is saved, without a transactional outbox. If publishing fails, the error is logged and the event is not retried.
+*   Stock deductions do not publish an event to Kafka yet.
+*   The CI pipeline builds with tests skipped; running the tests in CI is a planned improvement.
 
 ### Note for Apple Silicon (M1/M2/M3) Users
 This project is optimized for ARM64 architecture and Docker Desktop v29+.
@@ -85,16 +93,21 @@ To ensure a seamless development experience:
 
 ### Prerequisites
 *   Java 17 & Maven
-*   Docker Desktop (with Kubernetes enabled)
-*   Helm
+*   Docker Desktop
+*   Optional, for the Kubernetes deployment: Kubernetes enabled in Docker Desktop and Helm
 
 ### Steps
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/esrakonya/backend-service-java.git_
+   git clone https://github.com/esrakonya/distributed-marketplace.git
+   cd distributed-marketplace
+   ```
 2. **Build and test the project:**
    ```bash
    mvn clean install
+   ```
 3. **Run the full stack via Docker Compose:**
    ```bash
    docker compose up -d
+   ```
+4. **Use the system:** Send requests to the gateway at `http://localhost:8080`. Zipkin is available at `http://localhost:9411` and Kibana at `http://localhost:5601`.
